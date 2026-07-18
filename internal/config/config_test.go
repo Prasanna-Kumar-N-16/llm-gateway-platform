@@ -33,6 +33,38 @@ func TestLoadInvalidLogLevel(t *testing.T) {
 	}
 }
 
+func TestLoadRoutes(t *testing.T) {
+	t.Setenv("GATEWAY_ROUTES", `{"chat-default":[{"provider":"anthropic","model":"claude-opus-4-8"},{"provider":"openai","model":"gpt-4o"}]}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	targets, ok := cfg.Routes["chat-default"]
+	if !ok {
+		t.Fatal("expected a \"chat-default\" route")
+	}
+	if len(targets) != 2 || targets[0].Provider != "anthropic" || targets[1].Model != "gpt-4o" {
+		t.Errorf("unexpected targets: %+v", targets)
+	}
+}
+
+func TestLoadRoutesInvalidJSON(t *testing.T) {
+	t.Setenv("GATEWAY_ROUTES", `not json`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for invalid GATEWAY_ROUTES JSON, got nil")
+	}
+}
+
+func TestLoadRoutesEmptyTarget(t *testing.T) {
+	t.Setenv("GATEWAY_ROUTES", `{"chat-default":[{"provider":"","model":"gpt-4o"}]}`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for a route target with an empty provider, got nil")
+	}
+}
+
 func TestGetDuration(t *testing.T) {
 	tests := []struct {
 		name  string
