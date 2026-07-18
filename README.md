@@ -84,6 +84,14 @@ The server exposes a health endpoint once running:
 curl http://localhost:8080/healthz
 ```
 
+With at least one provider and a route configured (see `.env.example`), send a
+chat request through the gateway:
+
+```bash
+curl http://localhost:8080/v1/chat/completions \
+  -d '{"model":"chat-default","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+```
+
 ## Configuration
 
 Configuration is read from environment variables (see `.env.example`). Provider
