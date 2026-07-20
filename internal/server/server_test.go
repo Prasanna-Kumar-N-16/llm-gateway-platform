@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/config"
+	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/pricing"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/retry"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/router"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/pkg/provider"
@@ -26,7 +27,7 @@ func testServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	return New(cfg, testLogger(), router.New(router.WithLogger(testLogger())))
+	return New(cfg, testLogger(), router.New(router.WithLogger(testLogger())), pricing.New(pricing.DefaultTable()))
 }
 
 // fakeProvider is a scriptable provider used to test the chat endpoint
@@ -58,7 +59,7 @@ func chatServer(t *testing.T, fn func(*provider.ChatRequest) (*provider.ChatResp
 	rtr.AddRoute("chat-default", router.Route{Targets: []router.Target{
 		{Provider: provider.Anthropic, Model: "claude-opus-4-8"},
 	}})
-	return New(cfg, testLogger(), rtr)
+	return New(cfg, testLogger(), rtr, pricing.New(pricing.DefaultTable()))
 }
 
 func TestHealthEndpoint(t *testing.T) {
@@ -124,6 +125,39 @@ func TestChatCompletionsSuccess(t *testing.T) {
 	}
 	if body.Attempts != 1 {
 		t.Errorf("attempts = %d, want 1", body.Attempts)
+	}
+	if !body.Cost.Known {
+		t.Fatalf("cost = %+v, want a known price for claude-opus-4-8", body.Cost)
+	}
+	wantTotal := 3.0/1_000_000*15 + 2.0/1_000_000*75
+	if body.Cost.TotalUSD != wantTotal {
+		t.Errorf("cost.TotalUSD = %v, want %v", body.Cost.TotalUSD, wantTotal)
+	}
+}
+
+func TestChatCompletionsPassesCallerToProvider(t *testing.T) {
+	var gotCaller string
+	s := chatServer(t, func(req *provider.ChatRequest) (*provider.ChatResponse, error) {
+		gotCaller = req.Metadata["caller"]
+		return &provider.ChatResponse{
+			Provider: provider.Anthropic,
+			Model:    req.Model,
+			Content:  "ok",
+			Usage:    provider.Usage{InputTokens: 1, OutputTokens: 1},
+		}, nil
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		bytes.NewBufferString(`{"model":"chat-default","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("X-Gateway-Caller", "team-checkout")
+	rec := httptest.NewRecorder()
+	s.routes.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if gotCaller != "team-checkout" {
+		t.Errorf("caller propagated to request metadata = %q, want %q", gotCaller, "team-checkout")
 	}
 }
 

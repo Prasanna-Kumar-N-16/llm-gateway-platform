@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/config"
+	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/pricing"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/router"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/pkg/provider"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/pkg/provider/anthropic"
@@ -15,11 +16,12 @@ import (
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/pkg/provider/openai"
 )
 
-// Build constructs a Router from cfg: it registers a provider client for each
-// backend with credentials configured, then installs cfg.Routes. It returns
-// an error if no provider is configured, or if a route references a provider
-// that was not registered.
-func Build(cfg *config.Config, log *slog.Logger) (*router.Router, error) {
+// Build constructs a Router and a cost pricing.Calculator from cfg: it
+// registers a provider client for each backend with credentials configured,
+// installs cfg.Routes, and merges cfg.Pricing over the built-in rate table.
+// It returns an error if no provider is configured, or if a route references
+// a provider that was not registered.
+func Build(cfg *config.Config, log *slog.Logger) (*router.Router, *pricing.Calculator, error) {
 	r := router.New(router.WithLogger(log))
 
 	registered := make(map[provider.Name]bool)
@@ -27,7 +29,7 @@ func Build(cfg *config.Config, log *slog.Logger) (*router.Router, error) {
 	if cfg.AnthropicAPIKey != "" {
 		c, err := anthropic.New(cfg.AnthropicAPIKey)
 		if err != nil {
-			return nil, fmt.Errorf("gateway: anthropic: %w", err)
+			return nil, nil, fmt.Errorf("gateway: anthropic: %w", err)
 		}
 		r.Register(c)
 		registered[provider.Anthropic] = true
@@ -36,7 +38,7 @@ func Build(cfg *config.Config, log *slog.Logger) (*router.Router, error) {
 	if cfg.OpenAIAPIKey != "" {
 		c, err := openai.New(cfg.OpenAIAPIKey)
 		if err != nil {
-			return nil, fmt.Errorf("gateway: openai: %w", err)
+			return nil, nil, fmt.Errorf("gateway: openai: %w", err)
 		}
 		r.Register(c)
 		registered[provider.OpenAI] = true
@@ -49,18 +51,18 @@ func Build(cfg *config.Config, log *slog.Logger) (*router.Router, error) {
 			SessionToken:    cfg.AWSSessionToken,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("gateway: bedrock: %w", err)
+			return nil, nil, fmt.Errorf("gateway: bedrock: %w", err)
 		}
 		c, err := bedrock.New(cfg.AWSRegion, signer)
 		if err != nil {
-			return nil, fmt.Errorf("gateway: bedrock: %w", err)
+			return nil, nil, fmt.Errorf("gateway: bedrock: %w", err)
 		}
 		r.Register(c)
 		registered[provider.Bedrock] = true
 	}
 
 	if len(registered) == 0 {
-		return nil, fmt.Errorf("gateway: no provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or AWS credentials")
+		return nil, nil, fmt.Errorf("gateway: no provider configured; set ANTHROPIC_API_KEY, OPENAI_API_KEY, or AWS credentials")
 	}
 
 	for name, targets := range cfg.Routes {
@@ -68,12 +70,31 @@ func Build(cfg *config.Config, log *slog.Logger) (*router.Router, error) {
 		for i, t := range targets {
 			p := provider.Name(t.Provider)
 			if !registered[p] {
-				return nil, fmt.Errorf("gateway: route %q references unregistered provider %q", name, t.Provider)
+				return nil, nil, fmt.Errorf("gateway: route %q references unregistered provider %q", name, t.Provider)
 			}
 			route.Targets[i] = router.Target{Provider: p, Model: t.Model}
 		}
 		r.AddRoute(name, route)
 	}
 
-	return r, nil
+	priceTable := pricing.DefaultTable().Merge(toPricingTable(cfg.Pricing))
+	if err := priceTable.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("gateway: %w", err)
+	}
+
+	return r, pricing.New(priceTable), nil
+}
+
+func toPricingTable(cfgPricing map[string]map[string]config.PriceEntry) pricing.Table {
+	table := make(pricing.Table, len(cfgPricing))
+	for providerName, models := range cfgPricing {
+		table[provider.Name(providerName)] = make(map[string]pricing.ModelPrice, len(models))
+		for model, entry := range models {
+			table[provider.Name(providerName)][model] = pricing.ModelPrice{
+				InputPer1M:  entry.InputPer1M,
+				OutputPer1M: entry.OutputPer1M,
+			}
+		}
+	}
+	return table
 }

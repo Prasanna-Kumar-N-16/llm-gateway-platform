@@ -9,30 +9,38 @@ import (
 	"time"
 
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/config"
+	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/pricing"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/internal/router"
 	"github.com/Prasanna-Kumar-N-16/llm-gateway-platform/pkg/provider"
 )
 
+// callerHeader is the optional request header callers set to attribute spend
+// to a team, service, or feature. It is never forwarded to the provider.
+const callerHeader = "X-Gateway-Caller"
+
 // Server wraps the HTTP server and its dependencies. It owns the lifecycle of
 // the underlying listener and provides graceful shutdown.
 type Server struct {
-	cfg    *config.Config
-	log    *slog.Logger
-	router *router.Router
-	http   *http.Server
-	routes *http.ServeMux
+	cfg     *config.Config
+	log     *slog.Logger
+	router  *router.Router
+	pricing *pricing.Calculator
+	http    *http.Server
+	routes  *http.ServeMux
 }
 
-// New constructs a Server from configuration, a logger, and the router used
-// to serve chat requests. Routes are registered here so the mux is fully
-// wired before Start is called.
-func New(cfg *config.Config, log *slog.Logger, rtr *router.Router) *Server {
+// New constructs a Server from configuration, a logger, the router used to
+// serve chat requests, and the pricing calculator used to attribute cost to
+// each response. Routes are registered here so the mux is fully wired before
+// Start is called.
+func New(cfg *config.Config, log *slog.Logger, rtr *router.Router, pricer *pricing.Calculator) *Server {
 	mux := http.NewServeMux()
 	s := &Server{
-		cfg:    cfg,
-		log:    log,
-		router: rtr,
-		routes: mux,
+		cfg:     cfg,
+		log:     log,
+		router:  rtr,
+		pricing: pricer,
+		routes:  mux,
 		http: &http.Server{
 			Addr:         cfg.HTTPAddr,
 			Handler:      mux,
@@ -102,6 +110,7 @@ type chatCompletionResponse struct {
 	FinishReason provider.FinishReason `json:"finish_reason"`
 	Usage        provider.Usage        `json:"usage"`
 	Attempts     int                   `json:"attempts"`
+	Cost         pricing.Cost          `json:"cost"`
 }
 
 func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
@@ -119,17 +128,30 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	caller := r.Header.Get(callerHeader)
+
 	result, err := s.router.Chat(r.Context(), &provider.ChatRequest{
 		Model:       req.Model,
 		System:      req.System,
 		Messages:    req.Messages,
 		MaxTokens:   req.MaxTokens,
 		Temperature: req.Temperature,
+		Metadata:    map[string]string{"caller": caller},
 	})
 	if err != nil {
 		s.writeChatError(w, req.Model, err)
 		return
 	}
+
+	cost := s.pricing.Cost(result.Response.Provider, result.Response.Model, result.Response.Usage)
+	s.log.Info("chat request billed",
+		slog.String("caller", caller),
+		slog.String("provider", string(result.Response.Provider)),
+		slog.String("model", result.Response.Model),
+		slog.Int("input_tokens", result.Response.Usage.InputTokens),
+		slog.Int("output_tokens", result.Response.Usage.OutputTokens),
+		slog.Bool("cost_known", cost.Known),
+		slog.Float64("cost_usd", cost.TotalUSD))
 
 	writeJSON(w, http.StatusOK, chatCompletionResponse{
 		Provider:     result.Response.Provider,
@@ -138,6 +160,7 @@ func (s *Server) handleChatCompletions(w http.ResponseWriter, r *http.Request) {
 		FinishReason: result.Response.FinishReason,
 		Usage:        result.Response.Usage,
 		Attempts:     result.Attempts,
+		Cost:         cost,
 	})
 }
 

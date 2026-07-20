@@ -89,7 +89,25 @@ chat request through the gateway:
 
 ```bash
 curl http://localhost:8080/v1/chat/completions \
+  -H "X-Gateway-Caller: team-checkout" \
   -d '{"model":"chat-default","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}'
+```
+
+The response includes token usage and its attributed USD cost, computed from
+a built-in per-model rate table (override via `GATEWAY_PRICING`, see
+`.env.example`). The optional `X-Gateway-Caller` header attributes that cost
+to a team, service, or feature in the gateway's logs.
+
+```json
+{
+  "provider": "anthropic",
+  "model": "claude-opus-4-8",
+  "content": "...",
+  "finish_reason": "stop",
+  "usage": {"input_tokens": 12, "output_tokens": 34},
+  "attempts": 1,
+  "cost": {"input_usd": 0.00018, "output_usd": 0.00255, "total_usd": 0.00273, "known": true}
+}
 ```
 
 ## Configuration

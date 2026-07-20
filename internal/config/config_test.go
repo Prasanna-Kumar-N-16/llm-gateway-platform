@@ -65,6 +65,38 @@ func TestLoadRoutesEmptyTarget(t *testing.T) {
 	}
 }
 
+func TestLoadPricing(t *testing.T) {
+	t.Setenv("GATEWAY_PRICING", `{"anthropic":{"claude-opus-4-8":{"input_per_1m":1,"output_per_1m":2}}}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned error: %v", err)
+	}
+	entry, ok := cfg.Pricing["anthropic"]["claude-opus-4-8"]
+	if !ok {
+		t.Fatal("expected a pricing entry for anthropic/claude-opus-4-8")
+	}
+	if entry.InputPer1M != 1 || entry.OutputPer1M != 2 {
+		t.Errorf("unexpected entry: %+v", entry)
+	}
+}
+
+func TestLoadPricingInvalidJSON(t *testing.T) {
+	t.Setenv("GATEWAY_PRICING", `not json`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for invalid GATEWAY_PRICING JSON, got nil")
+	}
+}
+
+func TestLoadPricingNegativeRate(t *testing.T) {
+	t.Setenv("GATEWAY_PRICING", `{"anthropic":{"claude-opus-4-8":{"input_per_1m":-1,"output_per_1m":2}}}`)
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() expected error for a negative pricing rate")
+	}
+}
+
 func TestGetDuration(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -39,6 +39,10 @@ type Config struct {
 	// Routes maps a logical model name to an ordered fallback chain of
 	// provider targets, decoded from the GATEWAY_ROUTES JSON env var.
 	Routes map[string][]RouteTarget
+
+	// Pricing overrides or extends the built-in per-model USD rates used for
+	// cost attribution, decoded from the GATEWAY_PRICING JSON env var.
+	Pricing map[string]map[string]PriceEntry
 }
 
 // RouteTarget names one hop (provider + provider-native model id) in a
@@ -48,11 +52,23 @@ type RouteTarget struct {
 	Model    string `json:"model"`
 }
 
+// PriceEntry is the USD rate charged per 1M input/output tokens for one
+// provider/model pair.
+type PriceEntry struct {
+	InputPer1M  float64 `json:"input_per_1m"`
+	OutputPer1M float64 `json:"output_per_1m"`
+}
+
 // Load reads configuration from the environment, applying defaults for any
 // value that is not set. It returns an error only when a provided value is
 // malformed.
 func Load() (*Config, error) {
 	routes, err := getRoutes("GATEWAY_ROUTES")
+	if err != nil {
+		return nil, err
+	}
+
+	pricing, err := getPricing("GATEWAY_PRICING")
 	if err != nil {
 		return nil, err
 	}
@@ -72,7 +88,8 @@ func Load() (*Config, error) {
 		AWSSecretAccessKey: getString("AWS_SECRET_ACCESS_KEY", ""),
 		AWSSessionToken:    getString("AWS_SESSION_TOKEN", ""),
 
-		Routes: routes,
+		Routes:  routes,
+		Pricing: pricing,
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -100,6 +117,13 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	for providerName, models := range c.Pricing {
+		for model, price := range models {
+			if price.InputPer1M < 0 || price.OutputPer1M < 0 {
+				return fmt.Errorf("config: GATEWAY_PRICING entry %s/%s has a negative rate", providerName, model)
+			}
+		}
+	}
 	return nil
 }
 
@@ -116,6 +140,22 @@ func getRoutes(key string) (map[string][]RouteTarget, error) {
 		return nil, fmt.Errorf("config: invalid %s: %w", key, err)
 	}
 	return routes, nil
+}
+
+// getPricing decodes a JSON object mapping provider name to a map of model to
+// per-1M-token USD rate, e.g.
+// {"anthropic":{"claude-opus-4-8":{"input_per_1m":15,"output_per_1m":75}}}.
+// An unset or empty value yields no overrides.
+func getPricing(key string) (map[string]map[string]PriceEntry, error) {
+	v, ok := os.LookupEnv(key)
+	if !ok || v == "" {
+		return nil, nil
+	}
+	var pricing map[string]map[string]PriceEntry
+	if err := json.Unmarshal([]byte(v), &pricing); err != nil {
+		return nil, fmt.Errorf("config: invalid %s: %w", key, err)
+	}
+	return pricing, nil
 }
 
 func getString(key, fallback string) string {

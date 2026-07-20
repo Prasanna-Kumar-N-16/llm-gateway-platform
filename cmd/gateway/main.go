@@ -31,7 +31,7 @@ func run() error {
 		slog.String("addr", cfg.HTTPAddr),
 	)
 
-	rtr, err := gateway.Build(cfg, log)
+	rtr, pricer, err := gateway.Build(cfg, log)
 	if err != nil {
 		return err
 	}
@@ -39,7 +39,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	srv := server.New(cfg, log, rtr)
+	srv := server.New(cfg, log, rtr, pricer)
 	return srv.Start(ctx)
 }
 
